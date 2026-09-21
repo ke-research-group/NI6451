@@ -259,6 +259,12 @@ Laid out for Windows 11 rather than transliterated from the Qt window:
   alongside the other tunable parameters and switch with `ActualTheme`.
 - Free disk space is translated into *minutes of recording at the current channel count*,
   which is the number that actually matters before pressing Start.
+- **Sampling rate menu**: 500 k / 100 k / 20 k / 10 k / 2 kS/s per channel. Everything that
+  used to be derived from a fixed 500 kS/s follows the selection — the DAQmx callback chunk is
+  fixed at 10 ms of samples (so the plot updates at the same cadence at every rate), the flush
+  cadences stay at 10 s / 30 s, the driver buffer stays at 5 s, and the live plot is decimated
+  to the same 2 kHz display stream. The chosen rate is written to the recording's
+  `sample_rate` and to the spool manifest, so recovery and `read_example.py` see the right one.
 - **Output naming remembers itself.** The experiment serial, run number and date of the last
   run are stored in `%LOCALAPPDATA%\Ni6451\naming.json`. On the same day the run number
   advances; on a new day the serial advances and the run number resets to 1. Both fields can

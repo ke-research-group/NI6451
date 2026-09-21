@@ -24,6 +24,7 @@ internal static class SelfTestCommand
         TestCrashRecovery();
         TestAcquisitionStats();
         TestNamingState();
+        TestRateDerivedParameters();
         TestRollingBuffer();
         TestUnitConversion();
 
@@ -67,7 +68,7 @@ internal static class SelfTestCommand
             {
                 w.AddFloat64Array("ai0", ai0);
                 w.AddInt64Array("channels", [0L]);
-                w.AddInt64Scalar("sample_rate", AppConfig.Rate);
+                w.AddInt64Scalar("sample_rate", AppConfig.DefaultRate);
                 w.AddInt64Scalar("trigger_sample_index", -1);
             }
 
@@ -83,7 +84,7 @@ internal static class SelfTestCommand
             using var r = new NpzReader(path);
             Check("npz: float64 array round-trips", r.ReadFloat64Array("ai0").SequenceEqual(ai0));
             Check("npz: int64 array round-trips", r.ReadInt64Array("channels").SequenceEqual([0L]));
-            Check("npz: scalar round-trips", r.ReadInt64Scalar("sample_rate") == AppConfig.Rate);
+            Check("npz: scalar round-trips", r.ReadInt64Scalar("sample_rate") == AppConfig.DefaultRate);
             Check("npz: missing trigger is stored as -1", r.ReadInt64Scalar("trigger_sample_index") == -1);
             Check("npz: scalar has 0-D shape", r.GetHeader("sample_rate").Shape.Length == 0);
         }
@@ -102,7 +103,7 @@ internal static class SelfTestCommand
             int[] channels = [0, 3, 7];
             const int samples = 1000;
 
-            var spool = new ChannelSpool(workDir, channels, new SpoolManifest { ExperimentSerial = "0207", Rn = 5 });
+            var spool = new ChannelSpool(workDir, channels, 20_000, new SpoolManifest { ExperimentSerial = "0207", Rn = 5 });
             var chunk = new double[channels.Length * samples];
             for (int c = 0; c < channels.Length; c++)
                 for (int i = 0; i < samples; i++)
@@ -113,7 +114,7 @@ internal static class SelfTestCommand
             spool.CloseFiles();
 
             string outPath = FinalizeJob.Run(new FinalizeRequest(
-                spool.TempDir, spool.TotalSamplesWritten, workDir, channels, 12_345L, "0207", 5));
+                spool.TempDir, spool.TotalSamplesWritten, workDir, channels, 12_345L, "0207", 5, spool.SampleRate));
 
             Check("finalize: file name follows the T{SH}-raw-run{RN}-{timestamp}.npz pattern",
                 Path.GetFileName(outPath).StartsWith("T0207-raw-run5-", StringComparison.Ordinal)
@@ -126,7 +127,7 @@ internal static class SelfTestCommand
             Check("finalize: channels array matches the selection",
                 r.ReadInt64Array("channels").SequenceEqual(channels.Select(c => (long)c)));
             Check("finalize: trigger index is preserved", r.ReadInt64Scalar("trigger_sample_index") == 12_345L);
-            Check("finalize: sample_rate is AppConfig.Rate", r.ReadInt64Scalar("sample_rate") == AppConfig.Rate);
+            Check("finalize: sample_rate is the rate the spool was recorded at", r.ReadInt64Scalar("sample_rate") == 20_000);
 
             double[] ai3 = r.ReadFloat64Array("ai3");
             Check("finalize: channel data survives the spool round-trip",
@@ -150,7 +151,7 @@ internal static class SelfTestCommand
             const int samples = 800;
 
             // Simulate a run that was killed: data spooled, manifest present, never finalized.
-            var spool = new ChannelSpool(workDir, channels, new SpoolManifest { ExperimentSerial = "0311", Rn = 9 });
+            var spool = new ChannelSpool(workDir, channels, 10_000, new SpoolManifest { ExperimentSerial = "0311", Rn = 9 });
             spool.TriggerIndexSource = () => 42L;
 
             var chunk = new double[channels.Length * samples];
@@ -171,6 +172,7 @@ internal static class SelfTestCommand
                 orphan.RecoverableSamplesPerChannel == samples);
             Check("recovery: run numbering survives", orphan.Manifest.ExperimentSerial == "0311" && orphan.Manifest.Rn == 9);
             Check("recovery: trigger index survives", orphan.Manifest.TriggerSampleIndex == 42L);
+            Check("recovery: sample rate survives", orphan.Manifest.SampleRate == 10_000);
 
             string outPath = SpoolRecovery.Recover(orphan, workDir);
             Check("recovery: reuses the original run numbering in the file name",
@@ -183,6 +185,8 @@ internal static class SelfTestCommand
                     ai1.Length == samples && Math.Abs(ai1[799] - 1799) < 1e-12);
                 Check("recovery: the trigger index is carried into the archive",
                     r.ReadInt64Scalar("trigger_sample_index") == 42L);
+                Check("recovery: the archive carries the run's own sample rate, not the default",
+                    r.ReadInt64Scalar("sample_rate") == 10_000);
             }
 
             Check("recovery: a recovered run is not offered again",
@@ -269,6 +273,33 @@ internal static class SelfTestCommand
             string? dir = Path.GetDirectoryName(path);
             if (dir is not null && Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         }
+    }
+
+    // ---------- sample-rate derived parameters ----------
+
+    private static void TestRateDerivedParameters()
+    {
+        Check("rates: the menu offers 500k/100k/20k/10k/2k, highest first",
+            AppConfig.SupportedRates.SequenceEqual([500_000, 100_000, 20_000, 10_000, 2_000]));
+        Check("rates: the default is in the menu", AppConfig.SupportedRates.Contains(AppConfig.DefaultRate));
+
+        // A chunk is 10 ms at every rate, so the callback cadence and plot latency do not change.
+        Check("rates: chunk is 5 000 samples at 500 kS/s (unchanged from the fixed-rate design)",
+            AppConfig.ChunkFor(500_000) == 5_000);
+        Check("rates: chunk is 20 samples at 2 kS/s, not one plot update every 2.5 s",
+            AppConfig.ChunkFor(2_000) == 20);
+        Check("rates: chunk never drops below 20 samples", AppConfig.ChunkFor(100) == 20);
+
+        // Every supported rate decimates to exactly DisplayRateHz for the plot.
+        Check("rates: every rate is an exact multiple of the display rate",
+            AppConfig.SupportedRates.All(r => r % AppConfig.DisplayRateHz == 0));
+        Check("rates: decimation stride is 250 at 500 kS/s and 1 at 2 kS/s",
+            AppConfig.DecimationStrideFor(500_000) == 250 && AppConfig.DecimationStrideFor(2_000) == 1);
+
+        Check("rates: flush thresholds scale with the rate (10 s and 30 s)",
+            AppConfig.FlushSamplesFor(20_000) == 200_000 && AppConfig.DurableFlushSamplesFor(20_000) == 600_000);
+        Check("rates: driver buffer is 5 s at any rate", AppConfig.DriverBufferSamplesFor(10_000) == 50_000);
+        Check("rates: menu labels", AppConfig.FormatRate(500_000) == "500 kS/s" && AppConfig.FormatRate(2_000) == "2 kS/s");
     }
 
     // ---------- rolling buffer ----------
