@@ -71,9 +71,10 @@ public sealed partial class MainWindow : Window
         SetTitleBar(AppTitleBar);
         AppWindow.Resize(new SizeInt32(1480, 1000));
 
-        FixedParamsText.Text =
-            $"{AppConfig.Rate:N0} S/s per channel · {AppConfig.Chunk:N0}-sample chunks · "
-            + $"spooled continuously, flushed every {AppConfig.FlushIntervalSec}s";
+        foreach (int rate in AppConfig.SupportedRates)
+            RateCombo.Items.Add(AppConfig.FormatRate(rate));
+        RateCombo.SelectedIndex = Array.IndexOf(AppConfig.SupportedRates, AppConfig.DefaultRate);
+        UpdateRateCaption();
 
         CaptureTriggerToggle.IsOn = AppConfig.DefaultCaptureTrigger;
         TriggerLineBox.Text = AppConfig.DefaultTriggerLine;
@@ -102,6 +103,29 @@ public sealed partial class MainWindow : Window
     }
 
     private FrameworkElement Root => (FrameworkElement)Content;
+
+    // ---------- sampling rate ----------
+
+    /// <summary>The rate selected in the menu; falls back to the default if nothing is selected.</summary>
+    private int SelectedRate =>
+        RateCombo.SelectedIndex >= 0 && RateCombo.SelectedIndex < AppConfig.SupportedRates.Length
+            ? AppConfig.SupportedRates[RateCombo.SelectedIndex]
+            : AppConfig.DefaultRate;
+
+    private void OnRateChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateRateCaption();
+        UpdateDiskFree();
+    }
+
+    private void UpdateRateCaption()
+    {
+        if (FixedParamsText is null) return;
+        int rate = SelectedRate;
+        FixedParamsText.Text =
+            $"{rate:N0} S/s per channel · {AppConfig.ChunkFor(rate):N0}-sample chunks ({AppConfig.ChunkMilliseconds} ms) · "
+            + $"spooled continuously, flushed every {AppConfig.FlushIntervalSec}s";
+    }
 
     // ---------- device list ----------
 
@@ -164,15 +188,15 @@ public sealed partial class MainWindow : Window
 
             long free = new DriveInfo(root).AvailableFreeSpace;
 
-            // At the fixed rate, every active channel costs 4 MB/s. Turning free space into
-            // minutes of recording is the number that actually matters before pressing Start.
+            // Every active channel costs rate × 8 bytes/s (4 MB/s at 500 kS/s). Turning free space
+            // into minutes of recording is the number that actually matters before pressing Start.
             int channels = Math.Max(1, TraceView.EnabledChannels().Length);
-            double bytesPerSecond = (double)AppConfig.Rate * channels * sizeof(double);
+            double bytesPerSecond = (double)SelectedRate * channels * sizeof(double);
 
             // The merge writes a second full copy alongside the spool before the spool is removed.
             double minutes = free / bytesPerSecond / 2.0 / 60.0;
             DiskFreeText.Text =
-                $"{free / (1024.0 * 1024 * 1024):F1} GB free · about {minutes:F0} min at {channels} channel(s)";
+                $"{free / (1024.0 * 1024 * 1024):F1} GB free · about {minutes:F0} min at {channels} channel(s), {AppConfig.FormatRate(SelectedRate)}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -379,13 +403,14 @@ public sealed partial class MainWindow : Window
         ShearStressText.Text = "—";
         LvdtText.Text = "—";
 
+        int rate = SelectedRate;
         var manifest = new SpoolManifest { ExperimentSerial = _currentSerial, Rn = _currentRn };
-        _daq.Start(device, _saveDir, enabled, CaptureTriggerToggle.IsOn, TriggerLineBox.Text.Trim(), manifest);
+        _daq.Start(device, _saveDir, enabled, rate, CaptureTriggerToggle.IsOn, TriggerLineBox.Text.Trim(), manifest);
 
         if (_daq.IsRunning)
         {
             StopButton.IsEnabled = true;
-            SetStatus($"Acquiring · {AppConfig.Rate:N0} S/s × {enabled.Length} channels", StatusKind.Recording);
+            SetStatus($"Acquiring · {AppConfig.FormatRate(rate)} × {enabled.Length} channels", StatusKind.Recording);
             StatsPanel.Visibility = Visibility.Visible;
             TraceView.Start(enabled);
             _readoutTimer.Start();
@@ -423,7 +448,7 @@ public sealed partial class MainWindow : Window
         _isFinalizing = true;
         var request = new FinalizeRequest(
             result.TempDir, result.SamplesPerChannel, _saveDir!, result.Channels,
-            result.TriggerSampleIndex, _currentSerial, _currentRn);
+            result.TriggerSampleIndex, _currentSerial, _currentRn, result.SampleRate);
 
         // Deliberately not awaited: Stop returns immediately and the status bar is updated
         // when the merge lands, which is how the Qt version behaved with its FinalizeWorker.
@@ -492,6 +517,7 @@ public sealed partial class MainWindow : Window
         ChooseFolderButton.IsEnabled = !locked;
         StartButton.IsEnabled = !locked && _saveDir is not null;
         DeviceCombo.IsEnabled = !locked;
+        RateCombo.IsEnabled = !locked;
         RefreshButton.IsEnabled = !locked;
         CaptureTriggerToggle.IsEnabled = !locked;
         TriggerLineBox.IsEnabled = !locked && CaptureTriggerToggle.IsOn;

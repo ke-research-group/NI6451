@@ -113,5 +113,5 @@ public static class TriggerMonitor
     /// <summary>Convenience overload using the application's configured rate and chunk size.</summary>
     public static void Watch(
         string device, string triggerLine, string aiChannel, Action<TriggerEdge> onEdge, CancellationToken cancellationToken)
-        => Watch(device, triggerLine, aiChannel, AppConfig.Rate, AppConfig.Chunk, onEdge, cancellationToken);
+        => Watch(device, triggerLine, aiChannel, AppConfig.DefaultRate, AppConfig.ChunkFor(AppConfig.DefaultRate), onEdge, cancellationToken);
 }

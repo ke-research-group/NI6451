@@ -10,6 +10,7 @@ namespace Ni6451.Core;
 /// <param name="TriggerSampleIndex">AI sample index of the first trigger edge, or null if none.</param>
 /// <param name="ExperimentSerial">Four-digit, zero-padded experiment serial used in the file name (the <c>T{serial}</c> prefix).</param>
 /// <param name="Rn">Run number used in the file name.</param>
+/// <param name="SampleRate">Samples/s per channel the data was acquired at; written to the archive as <c>sample_rate</c>.</param>
 public sealed record FinalizeRequest(
     string TempDir,
     long SamplesPerChannel,
@@ -17,7 +18,8 @@ public sealed record FinalizeRequest(
     IReadOnlyList<int> Channels,
     long? TriggerSampleIndex,
     string ExperimentSerial,
-    int Rn);
+    int Rn,
+    int SampleRate);
 
 /// <summary>How far along a merge is, for a progress bar.</summary>
 public readonly record struct FinalizeProgress(int ChannelsDone, int ChannelCount, long BytesWritten, long TotalBytes)
@@ -73,7 +75,7 @@ public static class FinalizeJob
                         });
                 }
 
-                npz.AddInt64Scalar("sample_rate", AppConfig.Rate);
+                npz.AddInt64Scalar("sample_rate", request.SampleRate);
                 npz.AddInt64Array("channels", request.Channels.Select(c => (long)c).ToArray());
 
                 // -1 means trigger capture was off or no trigger edge was seen during the recording.

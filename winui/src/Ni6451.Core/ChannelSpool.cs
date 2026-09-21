@@ -21,6 +21,8 @@ public sealed class ChannelSpool : IDisposable
 {
     private readonly FileStream[] _files;
     private readonly int[] _channels;
+    private readonly long _flushSamples;
+    private readonly long _durableFlushSamples;
 
     private long _samplesSinceFlush;
     private long _samplesSinceDurableFlush;
@@ -28,20 +30,24 @@ public sealed class ChannelSpool : IDisposable
 
     /// <param name="saveDir">Folder the temp directory is created inside.</param>
     /// <param name="channels">Active AI channel numbers, e.g. [0, 3, 7].</param>
+    /// <param name="sampleRate">Samples/s per channel; sets the flush cadences and is recorded in the manifest.</param>
     /// <param name="manifest">Run metadata to record beside the data; a default is written if null.</param>
-    public ChannelSpool(string saveDir, IReadOnlyList<int> channels, SpoolManifest? manifest = null)
+    public ChannelSpool(string saveDir, IReadOnlyList<int> channels, int sampleRate, SpoolManifest? manifest = null)
     {
         ArgumentNullException.ThrowIfNull(saveDir);
         ArgumentNullException.ThrowIfNull(channels);
         if (channels.Count == 0) throw new ArgumentException("At least one channel is required.", nameof(channels));
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(sampleRate, 0);
 
         _channels = channels.ToArray();
+        _flushSamples = AppConfig.FlushSamplesFor(sampleRate);
+        _durableFlushSamples = AppConfig.DurableFlushSamplesFor(sampleRate);
         TempDir = Path.Combine(saveDir, $"_tmp_{DateTime.Now:yyyyMMdd_HHmmss}");
         Directory.CreateDirectory(TempDir);
 
         Manifest = manifest ?? new SpoolManifest();
         Manifest.Channels = _channels;
-        Manifest.SampleRate = AppConfig.Rate;
+        Manifest.SampleRate = sampleRate;
         Manifest.StartedUtc = DateTime.UtcNow.ToString("O");
         Manifest.Completed = false;
 
@@ -65,6 +71,8 @@ public sealed class ChannelSpool : IDisposable
     public string TempDir { get; }
 
     public IReadOnlyList<int> Channels => _channels;
+
+    public int SampleRate => Manifest.SampleRate;
 
     /// <summary>Run metadata persisted beside the data. Mutate, then call <see cref="SaveManifest"/>.</summary>
     public SpoolManifest Manifest { get; }
@@ -118,9 +126,9 @@ public sealed class ChannelSpool : IDisposable
         _samplesSinceFlush += nSamples;
         _samplesSinceDurableFlush += nSamples;
 
-        if (_samplesSinceFlush >= AppConfig.FlushSamples)
+        if (_samplesSinceFlush >= _flushSamples)
         {
-            bool durable = _samplesSinceDurableFlush >= AppConfig.DurableFlushSamples;
+            bool durable = _samplesSinceDurableFlush >= _durableFlushSamples;
             Flush(durable);
 
             _samplesSinceFlush = 0;

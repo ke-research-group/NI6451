@@ -13,16 +13,29 @@ public static class AppConfig
 {
     public const int NChannels = 16;
 
-    /// <summary>Samples/s per channel (max rate for 16 single-ended channels on this hardware).</summary>
-    public const int Rate = 500_000;
+    /// <summary>
+    /// Sample rates offered in the UI, samples/s per channel, highest first. 500 kS/s is the
+    /// ceiling for 16 single-ended channels on this hardware.
+    /// </summary>
+    public static readonly int[] SupportedRates = [500_000, 100_000, 20_000, 10_000, 2_000];
 
-    /// <summary>Samples per DAQmx "every N samples acquired" callback.</summary>
-    public const int Chunk = 5_000;
+    public const int DefaultRate = 500_000;
+
+    /// <summary>
+    /// Wall-clock length of one DAQmx "every N samples acquired" callback. Fixing the chunk in
+    /// time rather than in samples keeps the callback cadence, the live plot latency and the
+    /// writer queue's depth-in-seconds the same at every rate: 5 000 samples at 500 kS/s, 20 at
+    /// 2 kS/s. (A fixed 5 000-sample chunk would mean one plot update every 2.5 s at 2 kS/s.)
+    /// </summary>
+    public const int ChunkMilliseconds = 10;
+
+    /// <summary>Samples per callback for a given rate; never fewer than 20 so the callback rate stays sane.</summary>
+    public static int ChunkFor(int rate) => Math.Max(20, rate * ChunkMilliseconds / 1000);
 
     public const int FlushIntervalSec = 10;
 
     /// <summary>Samples/channel accumulated before the spool files are flushed to the OS.</summary>
-    public const long FlushSamples = (long)Rate * FlushIntervalSec;
+    public static long FlushSamplesFor(int rate) => (long)rate * FlushIntervalSec;
 
     /// <summary>
     /// How often the spool files are additionally fsync'd all the way to the drive.
@@ -36,11 +49,12 @@ public static class AppConfig
     /// </summary>
     public const int DurableFlushIntervalSec = 30;
 
-    public const long DurableFlushSamples = (long)Rate * DurableFlushIntervalSec;
+    public static long DurableFlushSamplesFor(int rate) => (long)rate * DurableFlushIntervalSec;
 
     /// <summary>
     /// Chunks the spool writer may fall behind by before the DAQ callback is made to wait.
-    /// At 16 channels this is about 2 s of acquisition, or 128 MB of pooled buffers.
+    /// Chunks are 10 ms, so this is about 2 s of acquisition at any rate -- 128 MB of pooled
+    /// buffers at 16 channels and 500 kS/s, proportionally less at lower rates.
     /// </summary>
     public const int WriteQueueCapacity = 200;
 
@@ -93,12 +107,20 @@ public static class AppConfig
 
     public const bool DefaultCaptureTrigger = true;
 
-    /// <summary>Keep every Nth full-rate sample for the live display.</summary>
-    public static int DecimationStride => Math.Max(1, Rate / DisplayRateHz);
+    /// <summary>
+    /// Keep every Nth full-rate sample for the live display, so the monitor stream runs at
+    /// <see cref="DisplayRateHz"/> regardless of the acquisition rate. Every supported rate is
+    /// an exact multiple of the display rate, so no rate is ever plotted at a fractional stride.
+    /// </summary>
+    public static int DecimationStrideFor(int rate) => Math.Max(1, rate / DisplayRateHz);
 
     /// <summary>Rolling-buffer capacity, in decimated samples per channel.</summary>
     public static int BufferCapacity => MaxWindowSec * DisplayRateHz;
 
     /// <summary>Driver-side DAQmx buffer, ~5 seconds worth of headroom.</summary>
-    public static ulong DriverBufferSamples => (ulong)Rate * 5;
+    public static ulong DriverBufferSamplesFor(int rate) => (ulong)rate * 5;
+
+    /// <summary>Human-readable rate for menus and status text: "500 kS/s", "2 kS/s".</summary>
+    public static string FormatRate(int rate) =>
+        rate % 1000 == 0 ? $"{rate / 1000} kS/s" : $"{rate:N0} S/s";
 }

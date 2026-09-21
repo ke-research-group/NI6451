@@ -11,7 +11,7 @@ internal static class TriggerTestCommand
         string device = "Dev2";
         string line = AppConfig.DefaultTriggerLine;
         string aiChannel = "ai0";
-        int rate = AppConfig.Rate;
+        int rate = AppConfig.DefaultRate;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -39,7 +39,7 @@ internal static class TriggerTestCommand
         int count = 0;
         try
         {
-            TriggerMonitor.Watch(device, line, aiChannel, rate, AppConfig.Chunk, edge =>
+            TriggerMonitor.Watch(device, line, aiChannel, rate, AppConfig.ChunkFor(rate), edge =>
             {
                 count++;
                 Console.WriteLine($"Trigger #{count} detected at sample {edge.Index} (t = {edge.Seconds:F6} s)");

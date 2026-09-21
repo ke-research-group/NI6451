@@ -22,7 +22,7 @@ public sealed class SpoolManifest
 
     public int[] Channels { get; set; } = [];
 
-    public int SampleRate { get; set; } = AppConfig.Rate;
+    public int SampleRate { get; set; } = AppConfig.DefaultRate;
 
     public string StartedUtc { get; set; } = string.Empty;
 
@@ -156,7 +156,8 @@ public static class SpoolRecovery
             orphan.Manifest.Channels,
             orphan.Manifest.TriggerSampleIndex >= 0 ? orphan.Manifest.TriggerSampleIndex : null,
             orphan.Manifest.ExperimentSerial,
-            orphan.Manifest.Rn);
+            orphan.Manifest.Rn,
+            orphan.Manifest.SampleRate);
 
         return FinalizeJob.Run(request, progress);
     }

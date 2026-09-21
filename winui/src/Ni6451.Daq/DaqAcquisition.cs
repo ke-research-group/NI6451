@@ -12,6 +12,7 @@ public sealed record AcquisitionResult(
     long SamplesPerChannel,
     IReadOnlyList<int> Channels,
     long? TriggerSampleIndex,
+    int SampleRate,
     AcquisitionSnapshot Stats);
 
 /// <summary>
@@ -112,8 +113,18 @@ public sealed class DaqAcquisition : IDisposable
     /// <summary>Whether trigger capture was requested for the current run.</summary>
     public bool CaptureTrigger { get; private set; }
 
-    /// <summary>Keep every Nth full-rate sample for the monitor stream. Display concern only.</summary>
-    public int MonitorDecimationStride { get; set; } = AppConfig.DecimationStride;
+    /// <summary>Samples/s per channel of the current or most recent run.</summary>
+    public int SampleRate { get; private set; } = AppConfig.DefaultRate;
+
+    /// <summary>Samples per DAQmx callback for the current run; derived from the rate.</summary>
+    public int Chunk { get; private set; } = AppConfig.ChunkFor(AppConfig.DefaultRate);
+
+    /// <summary>
+    /// Keep every Nth full-rate sample for the monitor stream, so the plot always receives
+    /// <see cref="AppConfig.DisplayRateHz"/> samples/s whatever the acquisition rate. Display
+    /// concern only; set from the rate on each <see cref="Start"/>.
+    /// </summary>
+    public int MonitorDecimationStride { get; private set; } = AppConfig.DecimationStrideFor(AppConfig.DefaultRate);
 
     /// <summary>
     /// AI sample index of the first trigger rising edge, or null if trigger capture is off
@@ -155,6 +166,7 @@ public sealed class DaqAcquisition : IDisposable
         string device,
         string saveDir,
         IReadOnlyList<int> channels,
+        int sampleRate = AppConfig.DefaultRate,
         bool captureTrigger = false,
         string triggerLine = AppConfig.DefaultTriggerLine,
         SpoolManifest? manifest = null)
@@ -164,6 +176,16 @@ public sealed class DaqAcquisition : IDisposable
             Error?.Invoke("A previous acquisition task is still active. Stop it before starting a new one.");
             return;
         }
+
+        if (sampleRate <= 0)
+        {
+            Error?.Invoke($"Sample rate must be positive (got {sampleRate}).");
+            return;
+        }
+
+        SampleRate = sampleRate;
+        Chunk = AppConfig.ChunkFor(sampleRate);
+        MonitorDecimationStride = AppConfig.DecimationStrideFor(sampleRate);
 
         _channels = channels.ToArray();
         int nActive = _channels.Length;
@@ -178,7 +200,7 @@ public sealed class DaqAcquisition : IDisposable
         _triggerLastValue = false;
         _sampleCounter = 0;
         _writerError = null;
-        _diBuffer = new byte[AppConfig.Chunk];
+        _diBuffer = new byte[Chunk];
         Stats.Reset(nActive, AppConfig.WriteQueueCapacity);
 
         lock (_latestLock)
@@ -190,7 +212,7 @@ public sealed class DaqAcquisition : IDisposable
             manifest.Device = device;
             manifest.CaptureTrigger = captureTrigger;
 
-            _spool = new ChannelSpool(saveDir, _channels, manifest)
+            _spool = new ChannelSpool(saveDir, _channels, sampleRate, manifest)
             {
                 TriggerIndexSource = () => TriggerSampleIndex,
             };
@@ -206,8 +228,8 @@ public sealed class DaqAcquisition : IDisposable
             }
 
             NiDaqmx.Check(NiDaqmx.DAQmxCfgSampClkTiming(
-                _aiTask, null, AppConfig.Rate, NiDaqmx.Val_Rising,
-                NiDaqmx.Val_ContSamps, AppConfig.DriverBufferSamples));
+                _aiTask, null, sampleRate, NiDaqmx.Val_Rising,
+                NiDaqmx.Val_ContSamps, AppConfig.DriverBufferSamplesFor(sampleRate)));
 
             if (captureTrigger)
             {
@@ -218,8 +240,8 @@ public sealed class DaqAcquisition : IDisposable
                 // Lock the DI sample clock and start to the AI task's, so DI sample N and
                 // AI sample N are taken at the same instant.
                 NiDaqmx.Check(NiDaqmx.DAQmxCfgSampClkTiming(
-                    _diTask, $"/{device}/ai/SampleClock", AppConfig.Rate, NiDaqmx.Val_Rising,
-                    NiDaqmx.Val_ContSamps, AppConfig.DriverBufferSamples));
+                    _diTask, $"/{device}/ai/SampleClock", sampleRate, NiDaqmx.Val_Rising,
+                    NiDaqmx.Val_ContSamps, AppConfig.DriverBufferSamplesFor(sampleRate)));
 
                 NiDaqmx.Check(NiDaqmx.DAQmxCfgDigEdgeStartTrig(
                     _diTask, $"/{device}/ai/StartTrigger", NiDaqmx.Val_Rising));
@@ -229,7 +251,7 @@ public sealed class DaqAcquisition : IDisposable
             unsafe
             {
                 NiDaqmx.Check(NiDaqmx.DAQmxRegisterEveryNSamplesEvent(
-                    _aiTask, NiDaqmx.Val_Acquired_Into_Buffer, AppConfig.Chunk, 0,
+                    _aiTask, NiDaqmx.Val_Acquired_Into_Buffer, (uint)Chunk, 0,
                     &EveryNSamplesThunk, GCHandle.ToIntPtr(_selfHandle)));
             }
 
@@ -283,7 +305,7 @@ public sealed class DaqAcquisition : IDisposable
         }
 
         return new AcquisitionResult(
-            spool.TempDir, spool.TotalSamplesWritten, _channels.ToArray(), TriggerSampleIndex, snapshot);
+            spool.TempDir, spool.TotalSamplesWritten, _channels.ToArray(), TriggerSampleIndex, SampleRate, snapshot);
     }
 
     // ---------- DAQmx callback ----------

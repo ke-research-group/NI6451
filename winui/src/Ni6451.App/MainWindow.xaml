@@ -83,6 +83,12 @@
                                     </Button>
                                 </Grid>
 
+                                <ComboBox
+                                    x:Name="RateCombo"
+                                    Header="Sampling rate"
+                                    HorizontalAlignment="Stretch"
+                                    SelectionChanged="OnRateChanged" />
+
                                 <TextBlock x:Name="FixedParamsText" Style="{StaticResource CardCaptionStyle}" />
                             </StackPanel>
                         </Border>
