@@ -6,6 +6,20 @@ using Ni6451.Core;
 
 namespace Ni6451.Daq;
 
+/// <summary>What an acquisition run does with the samples it reads.</summary>
+public enum AcquisitionMode
+{
+    /// <summary>Spool every sample to disk for later merging into a recording.</summary>
+    Record,
+
+    /// <summary>
+    /// Show the live traces and the sensor readout, and write nothing. The spool files, the
+    /// writer thread and the bounded queue are never created, so a monitoring session cannot
+    /// fill a drive and cannot be slowed down by one.
+    /// </summary>
+    Monitor,
+}
+
 /// <summary>What a finished acquisition leaves behind for <see cref="FinalizeJob"/> to merge.</summary>
 public sealed record AcquisitionResult(
     string TempDir,
@@ -113,6 +127,9 @@ public sealed class DaqAcquisition : IDisposable
     /// <summary>Whether trigger capture was requested for the current run.</summary>
     public bool CaptureTrigger { get; private set; }
 
+    /// <summary>Whether the current or most recent run spools to disk or only monitors.</summary>
+    public AcquisitionMode Mode { get; private set; } = AcquisitionMode.Record;
+
     /// <summary>Samples/s per channel of the current or most recent run.</summary>
     public int SampleRate { get; private set; } = AppConfig.DefaultRate;
 
@@ -162,14 +179,19 @@ public sealed class DaqAcquisition : IDisposable
     /// Start acquiring. On failure the <see cref="Error"/> event fires, everything opened so
     /// far is torn down, and <see cref="IsRunning"/> stays false.
     /// </summary>
+    /// <param name="saveDir">
+    /// Where the spool directory is created. Ignored, and allowed to be null, in
+    /// <see cref="AcquisitionMode.Monitor"/> — monitoring writes nothing, so it needs no folder.
+    /// </param>
     public void Start(
         string device,
-        string saveDir,
+        string? saveDir,
         IReadOnlyList<int> channels,
         int sampleRate = AppConfig.DefaultRate,
         bool captureTrigger = false,
         string triggerLine = AppConfig.DefaultTriggerLine,
-        SpoolManifest? manifest = null)
+        SpoolManifest? manifest = null,
+        AcquisitionMode mode = AcquisitionMode.Record)
     {
         if (_aiTask != 0)
         {
@@ -183,6 +205,13 @@ public sealed class DaqAcquisition : IDisposable
             return;
         }
 
+        if (mode == AcquisitionMode.Record && string.IsNullOrEmpty(saveDir))
+        {
+            Error?.Invoke("An output folder is required to record.");
+            return;
+        }
+
+        Mode = mode;
         SampleRate = sampleRate;
         Chunk = AppConfig.ChunkFor(sampleRate);
         MonitorDecimationStride = AppConfig.DecimationStrideFor(sampleRate);
@@ -208,16 +237,19 @@ public sealed class DaqAcquisition : IDisposable
 
         try
         {
-            manifest ??= new SpoolManifest();
-            manifest.Device = device;
-            manifest.CaptureTrigger = captureTrigger;
-
-            _spool = new ChannelSpool(saveDir, _channels, sampleRate, manifest)
+            if (mode == AcquisitionMode.Record)
             {
-                TriggerIndexSource = () => TriggerSampleIndex,
-            };
+                manifest ??= new SpoolManifest();
+                manifest.Device = device;
+                manifest.CaptureTrigger = captureTrigger;
 
-            StartPipelineThreads();
+                _spool = new ChannelSpool(saveDir!, _channels, sampleRate, manifest)
+                {
+                    TriggerIndexSource = () => TriggerSampleIndex,
+                };
+            }
+
+            StartPipelineThreads(mode);
 
             NiDaqmx.Check(NiDaqmx.DAQmxCreateTask(string.Empty, out _aiTask));
             foreach (int ch in _channels)
@@ -289,6 +321,9 @@ public sealed class DaqAcquisition : IDisposable
 
         ChannelSpool? spool = _spool;
         _spool = null;
+
+        // Monitor runs have nothing to finalize; null here means "no recording", which is also
+        // what a Record run that captured zero samples returns.
         if (spool is null) return null;
 
         spool.Flush(durable: true);
@@ -365,6 +400,10 @@ public sealed class DaqAcquisition : IDisposable
                 queue.Writer.WriteAsync(new PendingChunk(buffer, n, nActive)).AsTask().GetAwaiter().GetResult();
                 Stats.OnChunkQueued(n);
                 handedOff = true;
+            }
+            else
+            {
+                Stats.OnChunkMonitored(n);   // monitoring: counted and shown, never written
             }
 
             if (CaptureTrigger && _diTask != 0)
@@ -475,14 +514,20 @@ public sealed class DaqAcquisition : IDisposable
 
     // ---------- pipeline threads ----------
 
-    private void StartPipelineThreads()
+    private void StartPipelineThreads(AcquisitionMode mode)
     {
-        _spoolQueue = Channel.CreateBounded<PendingChunk>(new BoundedChannelOptions(AppConfig.WriteQueueCapacity)
+        // In Monitor mode the spool queue and its writer are simply never created. The callback
+        // sees a null queue, keeps its buffer, and returns it to the pool -- so there is no disk
+        // stage at all rather than one that writes to a discard.
+        if (mode == AcquisitionMode.Record)
         {
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = true,
-            SingleWriter = true,
-        });
+            _spoolQueue = Channel.CreateBounded<PendingChunk>(new BoundedChannelOptions(AppConfig.WriteQueueCapacity)
+            {
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleReader = true,
+                SingleWriter = true,
+            });
+        }
 
         _monitorQueue = Channel.CreateBounded<PendingChunk>(new BoundedChannelOptions(MonitorQueueCapacity)
         {
@@ -491,13 +536,16 @@ public sealed class DaqAcquisition : IDisposable
             SingleWriter = true,
         });
 
-        _writerThread = new Thread(WriterLoop)
+        if (mode == AcquisitionMode.Record)
         {
-            IsBackground = true,
-            Name = "ni6451-spool-writer",
-            Priority = ThreadPriority.AboveNormal,
-        };
-        _writerThread.Start();
+            _writerThread = new Thread(WriterLoop)
+            {
+                IsBackground = true,
+                Name = "ni6451-spool-writer",
+                Priority = ThreadPriority.AboveNormal,
+            };
+            _writerThread.Start();
+        }
 
         _monitorThread = new Thread(MonitorLoop)
         {

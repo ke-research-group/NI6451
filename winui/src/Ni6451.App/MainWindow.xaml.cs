@@ -32,6 +32,9 @@ public sealed partial class MainWindow : Window
     private const int ChShearStress = 1;    // ai1
     private const int ChLvdt = 2;           // ai2
 
+    /// <summary>Shown by a readout tile when its channel is not being acquired.</summary>
+    private const string EmptyReadout = "\u2014";
+
     // ai0 normal-stress setup: fault type -> available thicknesses, in (label, metres) pairs.
     // 2D is fixed at 50 cm inside UnitConversion itself, so the value passed for it doesn't matter.
     private static readonly (string Label, double Metres)[] Thickness1DOptions =
@@ -44,6 +47,7 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherTimer _readoutTimer = new();
 
     private string? _saveDir;
+    private AcquisitionMode _mode = AcquisitionMode.Record;
     private bool _isFinalizing;
     private bool _isClosing;
     private string? _lastAlert;
@@ -362,7 +366,16 @@ public sealed partial class MainWindow : Window
 
     // ---------- acquisition control ----------
 
-    private void OnStart(object sender, RoutedEventArgs e)
+    private void OnStart(object sender, RoutedEventArgs e) => BeginAcquisition(AcquisitionMode.Record);
+
+    /// <summary>
+    /// Monitor-only: stream the selected channels to the plots and the sensor readout, and
+    /// write nothing. Needs no output folder, and deliberately does not touch the run
+    /// numbering -- no file is produced, so no run number has been used up.
+    /// </summary>
+    private void OnMonitor(object sender, RoutedEventArgs e) => BeginAcquisition(AcquisitionMode.Monitor);
+
+    private void BeginAcquisition(AcquisitionMode mode)
     {
         string device = DeviceCombo.Text.Trim();
         if (string.IsNullOrEmpty(device))
@@ -371,9 +384,10 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (_saveDir is null)
+        if (mode == AcquisitionMode.Record && _saveDir is null)
         {
-            ShowAlert(InfoBarSeverity.Warning, "No output folder", "Choose a folder for the recording first.");
+            ShowAlert(InfoBarSeverity.Warning, "No output folder",
+                "Choose a folder for the recording first, or use Monitor to stream without saving.");
             return;
         }
 
@@ -386,32 +400,45 @@ public sealed partial class MainWindow : Window
 
         ClearAlert();
         RecoveryBar.IsOpen = false;
+        _mode = mode;
         SetControlsLocked(true);
 
-        // Capture the naming/fault settings now, so later edits don't retroactively affect
-        // the file this run is about to produce.
-        _currentSerial = CurrentSerialPadded;
-        _currentRn = CurrentRn;
+        SpoolManifest? manifest = null;
+        if (mode == AcquisitionMode.Record)
+        {
+            // Capture the naming/fault settings now, so later edits don't retroactively affect
+            // the file this run is about to produce.
+            _currentSerial = CurrentSerialPadded;
+            _currentRn = CurrentRn;
 
-        // Remember it immediately -- before the hardware starts -- so even a run that ends in
-        // a crash still advances the numbering next time.
-        _naming.RecordRun(_currentSerial, _currentRn, DateOnly.FromDateTime(DateTime.Now));
-        _naming.Save(_namingPath);
+            // Remember it immediately -- before the hardware starts -- so even a run that ends
+            // in a crash still advances the numbering.
+            _naming.RecordRun(_currentSerial, _currentRn, DateOnly.FromDateTime(DateTime.Now));
+            _naming.Save(_namingPath);
+
+            manifest = new SpoolManifest { ExperimentSerial = _currentSerial, Rn = _currentRn };
+        }
 
         SetTriggerTile(triggered: false);
-        NormalStressText.Text = "—";
-        ShearStressText.Text = "—";
-        LvdtText.Text = "—";
+        NormalStressText.Text = EmptyReadout;
+        ShearStressText.Text = EmptyReadout;
+        LvdtText.Text = EmptyReadout;
 
         int rate = SelectedRate;
-        var manifest = new SpoolManifest { ExperimentSerial = _currentSerial, Rn = _currentRn };
-        _daq.Start(device, _saveDir, enabled, rate, CaptureTriggerToggle.IsOn, TriggerLineBox.Text.Trim(), manifest);
+        _daq.Start(device, mode == AcquisitionMode.Record ? _saveDir : null, enabled, rate,
+                   CaptureTriggerToggle.IsOn, TriggerLineBox.Text.Trim(), manifest, mode);
 
         if (_daq.IsRunning)
         {
             StopButton.IsEnabled = true;
-            SetStatus($"Acquiring · {AppConfig.FormatRate(rate)} × {enabled.Length} channels", StatusKind.Recording);
+            SetStatus(
+                mode == AcquisitionMode.Record
+                    ? $"Recording | {AppConfig.FormatRate(rate)} on {enabled.Length} channels"
+                    : $"Monitoring | {AppConfig.FormatRate(rate)} on {enabled.Length} channels | not saving",
+                mode == AcquisitionMode.Record ? StatusKind.Recording : StatusKind.Monitoring);
+
             StatsPanel.Visibility = Visibility.Visible;
+            RecordingStats.Visibility = mode == AcquisitionMode.Record ? Visibility.Visible : Visibility.Collapsed;
             TraceView.Start(enabled);
             _readoutTimer.Start();
         }
@@ -420,7 +447,6 @@ public sealed partial class MainWindow : Window
             SetControlsLocked(false);
         }
     }
-
     private void OnStop(object sender, RoutedEventArgs e) => StopAcquisition();
 
     private void StopAcquisition()
@@ -431,7 +457,20 @@ public sealed partial class MainWindow : Window
         SetTriggerTile(triggered: false);
         StatsPanel.Visibility = Visibility.Collapsed;
 
+        bool wasMonitoring = _daq.Mode == AcquisitionMode.Monitor;
+        AcquisitionSnapshot finalStats = _daq.Stats.Snapshot();
         AcquisitionResult? result = _daq.StopAcquisition();
+
+        if (wasMonitoring)
+        {
+            SetStatus(
+                $"Monitored {finalStats.SamplesPerChannel:N0} samples/channel for "
+                + $"{FormatElapsed(finalStats.Elapsed)}; nothing was saved",
+                StatusKind.Idle);
+            SetControlsLocked(false);
+            return;
+        }
+
         if (result is null)
         {
             SetStatus("Idle", StatusKind.Idle);
@@ -516,6 +555,7 @@ public sealed partial class MainWindow : Window
     {
         ChooseFolderButton.IsEnabled = !locked;
         StartButton.IsEnabled = !locked && _saveDir is not null;
+        MonitorButton.IsEnabled = !locked;   // monitoring writes nothing, so it needs no folder
         DeviceCombo.IsEnabled = !locked;
         RateCombo.IsEnabled = !locked;
         RefreshButton.IsEnabled = !locked;
@@ -551,24 +591,29 @@ public sealed partial class MainWindow : Window
 
         NormalStressText.Text = _daq.TryGetLatestVoltage(ChNormalStress, out double v0)
             ? $"{UnitConversion.GetNormalStress(v0, faultType, thicknessM) / 1e6:F1}"
-            : "—";
+            : EmptyReadout;
 
         ShearStressText.Text = _daq.TryGetLatestVoltage(ChShearStress, out double v1)
             ? $"{UnitConversion.GetShearStress(v1, faultType, thicknessM) / 1e6:F1}"
-            : "—";
+            : EmptyReadout;
 
         LvdtText.Text = _daq.TryGetLatestVoltage(ChLvdt, out double v2)
             ? $"{UnitConversion.GetLvdtDisplacement(v2) * 1000:F1}"
-            : "—";
+            : EmptyReadout;
 
         UpdateStats(_daq.Stats.Snapshot());
     }
 
+    private static string FormatElapsed(TimeSpan t) => t.TotalHours >= 1
+        ? $"{(int)t.TotalHours}:{t.Minutes:00}:{t.Seconds:00}"
+        : $"{t.Minutes}:{t.Seconds:00}";
+
     private void UpdateStats(AcquisitionSnapshot s)
     {
-        StatElapsed.Text = s.Elapsed.TotalHours >= 1
-            ? $"{(int)s.Elapsed.TotalHours}:{s.Elapsed.Minutes:00}:{s.Elapsed.Seconds:00}"
-            : $"{s.Elapsed.Minutes}:{s.Elapsed.Seconds:00}";
+        StatElapsed.Text = FormatElapsed(s.Elapsed);
+        StatSamples.Text = s.SamplesPerChannel.ToString("N0");
+
+        if (_mode == AcquisitionMode.Monitor) return;   // everything below is about the disk
 
         double mb = s.BytesSpooled / (1024.0 * 1024.0);
         StatWritten.Text = mb >= 1024 ? $"{mb / 1024:F2} GB" : $"{mb:F0} MB";
@@ -593,7 +638,7 @@ public sealed partial class MainWindow : Window
 
     // ---------- status and alerts ----------
 
-    private enum StatusKind { Idle, Recording, Busy, Error }
+    private enum StatusKind { Idle, Recording, Monitoring, Busy, Error }
 
     private void SetStatus(string text, StatusKind kind)
     {
@@ -601,6 +646,7 @@ public sealed partial class MainWindow : Window
         StatusDot.Fill = kind switch
         {
             StatusKind.Recording => ThemeBrush("SystemFillColorCriticalBrush", 0xC4, 0x2B, 0x1C),
+            StatusKind.Monitoring => ThemeBrush("SystemFillColorSuccessBrush", 0x0F, 0x7B, 0x0F),
             StatusKind.Busy => ThemeBrush("SystemFillColorCautionBrush", 0x9D, 0x5D, 0x00),
             StatusKind.Error => ThemeBrush("SystemFillColorCriticalBrush", 0xC4, 0x2B, 0x1C),
             _ => ThemeBrush("TextFillColorTertiaryBrush", 0x8A, 0x8A, 0x8A),

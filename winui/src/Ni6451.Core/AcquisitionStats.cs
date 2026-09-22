@@ -85,6 +85,17 @@ public sealed class AcquisitionStats
         }
     }
 
+    /// <summary>
+    /// Monitor-only mode: a chunk was acquired and shown, but deliberately never queued for
+    /// disk. Counts the samples without touching the queue depth, which stays at zero because
+    /// there is no writer to fall behind.
+    /// </summary>
+    public void OnChunkMonitored(int samplesPerChannel)
+    {
+        Interlocked.Increment(ref _chunksAcquired);
+        Interlocked.Add(ref _samplesPerChannel, samplesPerChannel);
+    }
+
     /// <summary>Called on the spool writer thread once a chunk has reached the file streams.</summary>
     public void OnChunkWritten(long bytes)
     {

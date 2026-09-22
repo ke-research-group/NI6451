@@ -25,6 +25,7 @@ internal static class SelfTestCommand
         TestAcquisitionStats();
         TestNamingState();
         TestRateDerivedParameters();
+        TestMonitorStats();
         TestRollingBuffer();
         TestUnitConversion();
 
@@ -300,6 +301,25 @@ internal static class SelfTestCommand
             AppConfig.FlushSamplesFor(20_000) == 200_000 && AppConfig.DurableFlushSamplesFor(20_000) == 600_000);
         Check("rates: driver buffer is 5 s at any rate", AppConfig.DriverBufferSamplesFor(10_000) == 50_000);
         Check("rates: menu labels", AppConfig.FormatRate(500_000) == "500 kS/s" && AppConfig.FormatRate(2_000) == "2 kS/s");
+    }
+
+    // ---------- monitor-only mode ----------
+
+    private static void TestMonitorStats()
+    {
+        // Monitoring counts what it acquired but never queues anything, so the queue depth --
+        // the number that reports how far the disk writer is behind -- must stay at zero.
+        var stats = new AcquisitionStats();
+        stats.Reset(channelCount: 4, queueCapacity: AppConfig.WriteQueueCapacity);
+
+        for (int i = 0; i < 50; i++) stats.OnChunkMonitored(5_000);
+
+        AcquisitionSnapshot s = stats.Snapshot();
+        Check("monitor: acquired chunks are counted", s.ChunksAcquired == 50);
+        Check("monitor: samples are counted", s.SamplesPerChannel == 250_000);
+        Check("monitor: nothing is reported as written", s.BytesSpooled == 0);
+        Check("monitor: the writer queue stays empty", s.QueueDepth == 0 && s.PeakQueueDepth == 0);
+        Check("monitor: no data loss is reported", !s.HasDataLoss);
     }
 
     // ---------- rolling buffer ----------
