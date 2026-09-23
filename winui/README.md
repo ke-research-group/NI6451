@@ -259,6 +259,11 @@ Laid out for Windows 11 rather than transliterated from the Qt window:
   alongside the other tunable parameters and switch with `ActualTheme`.
 - Free disk space is translated into *minutes of recording at the current channel count*,
   which is the number that actually matters before pressing Start.
+- **Monitor (green) beside Record.** Streams the selected channels to the plots and the
+  sensor readout and writes nothing: no spool files, no writer thread, no bounded queue —
+  those stages are never created, rather than created and pointed at a discard. It needs no
+  output folder and does not consume a run number, so it is safe to leave running while
+  setting up. The status bar says *not saving* and hides the written/throughput/queue figures.
 - **Sampling rate menu**: 500 k / 100 k / 20 k / 10 k / 2 kS/s per channel. Everything that
   used to be derived from a fixed 500 kS/s follows the selection — the DAQmx callback chunk is
   fixed at 10 ms of samples (so the plot updates at the same cadence at every rate), the flush

@@ -179,14 +179,47 @@
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
-                    <Button x:Name="StartButton" Grid.Column="0" Style="{StaticResource AccentButtonStyle}" HorizontalAlignment="Stretch" Height="40" IsEnabled="False" Click="OnStart">
+
+                    <Button
+                        x:Name="MonitorButton"
+                        Grid.Column="0"
+                        HorizontalAlignment="Stretch"
+                        Height="40"
+                        Click="OnMonitor"
+                        ToolTipService.ToolTip="Stream the selected channels without writing anything to disk. No output folder needed.">
+                        <!--
+                            Green, and it has to be done by overriding the button's own brush
+                            resources: a plain Background setter is replaced by the default
+                            template's own brushes as soon as the pointer enters the control.
+                        -->
+                        <Button.Resources>
+                            <SolidColorBrush x:Key="ButtonBackground" Color="#0F7B0F" />
+                            <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="#0C670C" />
+                            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#0A560A" />
+                            <SolidColorBrush x:Key="ButtonForeground" Color="White" />
+                            <SolidColorBrush x:Key="ButtonForegroundPointerOver" Color="White" />
+                            <SolidColorBrush x:Key="ButtonForegroundPressed" Color="#E6FFFFFF" />
+                            <SolidColorBrush x:Key="ButtonBorderBrush" Color="#0A560A" />
+                            <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="#0A560A" />
+                            <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="#084508" />
+                        </Button.Resources>
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <FontIcon Glyph="&#xE768;" FontSize="14" />
-                            <TextBlock Text="Start" />
+                            <FontIcon Glyph="&#xE890;" FontSize="14" />
+                            <TextBlock Text="Monitor" />
                         </StackPanel>
                     </Button>
-                    <Button x:Name="StopButton" Grid.Column="1" HorizontalAlignment="Stretch" Height="40" IsEnabled="False" Click="OnStop">
+
+                    <Button x:Name="StartButton" Grid.Column="1" Style="{StaticResource AccentButtonStyle}" HorizontalAlignment="Stretch" Height="40" IsEnabled="False" Click="OnStart"
+                            ToolTipService.ToolTip="Stream the selected channels and record them to disk.">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <FontIcon Glyph="&#xE768;" FontSize="14" />
+                            <TextBlock Text="Record" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button x:Name="StopButton" Grid.Column="2" HorizontalAlignment="Stretch" Height="40" IsEnabled="False" Click="OnStop">
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <FontIcon Glyph="&#xE71A;" FontSize="14" />
                             <TextBlock Text="Stop" />
@@ -284,17 +317,25 @@
                         <TextBlock x:Name="StatElapsed" Text="0:00" Style="{StaticResource StatValueStyle}" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="5">
-                        <TextBlock Text="Written" Style="{StaticResource StatCaptionStyle}" />
-                        <TextBlock x:Name="StatWritten" Text="0 MB" Style="{StaticResource StatValueStyle}" />
+                        <TextBlock Text="Samples/ch" Style="{StaticResource StatCaptionStyle}" />
+                        <TextBlock x:Name="StatSamples" Text="0" Style="{StaticResource StatValueStyle}" />
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" Spacing="5">
-                        <TextBlock Text="Throughput" Style="{StaticResource StatCaptionStyle}" />
-                        <TextBlock x:Name="StatThroughput" Text="0 MB/s" Style="{StaticResource StatValueStyle}" />
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Spacing="5" ToolTipService.ToolTip="How far the disk writer is behind the acquisition. Sustained high values mean the drive is the bottleneck.">
-                        <TextBlock Text="Queue" Style="{StaticResource StatCaptionStyle}" />
-                        <ProgressBar x:Name="StatQueueBar" Width="54" Minimum="0" Maximum="1" VerticalAlignment="Center" />
-                        <TextBlock x:Name="StatQueue" Text="0%" Style="{StaticResource StatValueStyle}" />
+
+                    <!-- Only meaningful while recording; hidden in monitor-only mode. -->
+                    <StackPanel x:Name="RecordingStats" Orientation="Horizontal" Spacing="16">
+                        <StackPanel Orientation="Horizontal" Spacing="5">
+                            <TextBlock Text="Written" Style="{StaticResource StatCaptionStyle}" />
+                            <TextBlock x:Name="StatWritten" Text="0 MB" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="5">
+                            <TextBlock Text="Throughput" Style="{StaticResource StatCaptionStyle}" />
+                            <TextBlock x:Name="StatThroughput" Text="0 MB/s" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="5" ToolTipService.ToolTip="How far the disk writer is behind the acquisition. Sustained high values mean the drive is the bottleneck.">
+                            <TextBlock Text="Queue" Style="{StaticResource StatCaptionStyle}" />
+                            <ProgressBar x:Name="StatQueueBar" Width="54" Minimum="0" Maximum="1" VerticalAlignment="Center" />
+                            <TextBlock x:Name="StatQueue" Text="0%" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
                     </StackPanel>
                 </StackPanel>
             </Grid>
